@@ -1,0 +1,195 @@
+version: "3"
+
+services:
+ joomla: 
+  image: myjoomla
+  hostname: jo
+  ports:
+   - 8081:80
+  depends_on:
+   - db
+  deploy:
+   mode: replicated
+   replicas: 3
+   placement:
+    constraints:
+     - node.role == worker
+  labels:
+   - "com.docker.lb.hosts=project.local"
+   - "com.docker.lb.sticky_session_cookie=session" 
+   - "com.docker.lb.port=3001"
+  volumes: 
+   - /gfs/joomla/:/var/www/html/
+  networks:
+   - intnet
+
+ phpmyadmin:
+  image: myphpmyadmin
+  hostname: pma
+  depends_on:
+   - db
+  ports:
+   - 8082:80
+  deploy:
+   placement:
+    constraints:
+     - node.role == worker
+  environment:
+   - DB_HOST=db
+   - MYSQL_ROOT_PASSWORD=secret
+  volumes:
+   - /gfs/phpmyadmin:/config
+  networks:
+   - intnet
+
+ db:
+  image: mariadb
+  hostname: db
+  ports:
+   - 3306:3306
+  deploy:
+   placement:
+    constraints:
+     - node.role == worker
+  environment:
+   MYSQL_ROOT_PASSWORD: secret
+  volumes:
+   - /gfs/mysql:/var/lib/mysql
+  networks: 
+   - intnet
+
+ visualizer:
+  image: dockersamples/visualizer
+  ports:
+   - 8000:8080
+  deploy:
+   placement:
+    constraints:
+     - node.role == manager
+  volumes:
+   - /var/run/docker.sock:/var/run/docker.sock:ro
+  networks:
+   - intnet
+
+ prometheus:
+  image: prom/prometheus:latest
+  depends_on:
+   - node-exporter
+  volumes:
+   - ./prometheus:/etc/prometheus
+  command:
+   - '--config.file=/etc/prometheus/prometheus.yml'
+   - '--storage.tsdb.path=/prometheus'
+   - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+   - '--web.console.templates=/usr/share/prometheus/consoles'
+#       restart: unless-stopped
+   - '--web.external-url=http://project.local/prometheus/' 
+   - '--web.route-prefix=/'
+  ports:
+   - '9090:9090'
+  deploy:
+   mode: global
+   placement:
+    constraints:
+     - node.role == manager
+  networks:
+   - intnet
+ 
+ node-exporter:
+  image: prom/node-exporter:latest
+  volumes:
+   - /proc:/host/proc:ro
+   - /sys:/host/sys:ro
+   - /:/rootfs:ro
+  ports:
+   - '9100:9100'
+  command:
+   - '--path.procfs=/host/proc'
+   - '--path.rootfs=/rootfs'
+   - '--path.sysfs=/host/sys'
+   - '--collector.filesystem.ignored-mount-points=^/(sys|proc|dev|host|etc)($$|/)'
+  deploy:
+   mode: global
+  networks:
+   - intnet
+
+ grafana:
+  image: grafana/grafana
+  volumes:
+   - /gfs/grafana:/var/lib/grafana
+  environment:
+#   - GF_PATHS_CONFIG='/gfs/grafana/'
+   - GF_SECURITY_ADMIN_USER=${ADMIN_USER:-admin}
+   - GF_SECURITY_ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
+   - GF_SERVER_DOMAIN=project.local/monitoring/
+   - GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s
+  depends_on:
+   - prometheus
+  ports:
+   - "8085:3000"
+  deploy:
+   placement:
+    constraints:
+     - node.role == manager
+  user: "1000"
+  networks:
+   - intnet
+
+ cadvisor:
+  image: google/cadvisor:latest
+# gcr.io/google-containers/cadvisor:latest
+  privileged: true
+  volumes:
+   - /:/rootfs:ro
+   - /var/run:/var/run:rw
+   - /sys:/sys:ro
+   - /var/lib/docker/:/var/lib/docker:ro
+   - /dev/disk/:/dev/disk:ro #
+#  command:
+#   - '--url_base_prefix=http://project.local/docker/'
+  ports:
+   - 8088:8080
+  deploy:
+   mode: global
+  networks:
+   - intnet
+
+ alertmanager:
+  image: prom/alertmanager
+  ports:
+   - 9093:9093
+  volumes:
+   - ./prometheus/alertmanager/:/etc/alertmanager
+  command:
+   - '--config.file=/etc/alertmanager/config.yml'
+   - '--storage.path=/alertmanager'
+  deploy:
+   placement:
+    constraints:
+     - node.role == manager
+  networks:
+   - intnet
+
+ reverse:
+  hostname: reverse
+  image: nginx
+  ports:
+   - 80:80
+  volumes:
+   - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+   - ./nginx:/etc/nginx/sites-available/default
+  networks:
+   - intnet
+   - extnet
+
+networks:
+ intnet: 
+  internal: true
+  ipam:
+   config:
+    - subnet: 192.168.200.0/24
+ extnet:
+  ipam:
+   config:
+    - subnet: 192.168.100.0/24
+
